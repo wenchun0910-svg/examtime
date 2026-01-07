@@ -35,13 +35,23 @@
         input[type="time"]::-webkit-calendar-picker-indicator {
             display: none;
         }
+
+        /* 隱藏檔案輸入原始按鈕 */
+        .hidden-input {
+            display: none;
+        }
+
+        /* 按鈕點擊效果 */
+        .btn-active:active {
+            transform: scale(0.95);
+        }
     </style>
 </head>
 <body>
     <div id="root"></div>
 
     <script type="text/babel">
-        const { useState, useEffect, useMemo } = React;
+        const { useState, useEffect, useMemo, useRef } = React;
 
         // --- 預設資料 ---
         const DEFAULT_SCHEDULE = [
@@ -83,25 +93,21 @@
 
         const App = () => {
             // --- 狀態管理 ---
-            // 系統時間與偏移量
             const [now, setNow] = useState(new Date());
             const [offset, setOffset] = useState(() => {
                 const saved = localStorage.getItem('exam_clock_offset');
                 return saved ? parseInt(saved, 10) : 0;
             });
 
-            // 時間表狀態 (新增)
             const [schedule, setSchedule] = useState(() => {
                 const saved = localStorage.getItem('exam_schedule');
                 return saved ? JSON.parse(saved) : DEFAULT_SCHEDULE;
             });
             
-            // A區資料：科目(陣列)、應到、實到、未到
             const [examData, setExamData] = useState(() => {
                 const saved = localStorage.getItem('exam_data');
                 if (saved) {
                     const parsed = JSON.parse(saved);
-                    // 兼容性檢查
                     if (!parsed.subjects) {
                         return { ...parsed, subjects: ["", "", ""] };
                     }
@@ -115,7 +121,17 @@
                 };
             });
 
-            // --- Effect: 時鐘滴答 ---
+            // 音檔相關狀態
+            const [audioTracks, setAudioTracks] = useState([
+                { src: null, fileName: "", isPlaying: false, progress: 0 },
+                { src: null, fileName: "", isPlaying: false, progress: 0 },
+                { src: null, fileName: "", isPlaying: false, progress: 0 }
+            ]);
+            
+            const audioRefs = useRef([]);
+            const fileInputRefs = useRef([]);
+
+            // --- Effects ---
             useEffect(() => {
                 const timer = setInterval(() => {
                     setNow(new Date());
@@ -123,36 +139,22 @@
                 return () => clearInterval(timer);
             }, []);
 
-            // --- Effect: 儲存資料 ---
-            useEffect(() => {
-                localStorage.setItem('exam_clock_offset', offset);
-            }, [offset]);
-
-            useEffect(() => {
-                localStorage.setItem('exam_data', JSON.stringify(examData));
-            }, [examData]);
-
-            useEffect(() => {
-                localStorage.setItem('exam_schedule', JSON.stringify(schedule));
-            }, [schedule]);
+            useEffect(() => { localStorage.setItem('exam_clock_offset', offset); }, [offset]);
+            useEffect(() => { localStorage.setItem('exam_data', JSON.stringify(examData)); }, [examData]);
+            useEffect(() => { localStorage.setItem('exam_schedule', JSON.stringify(schedule)); }, [schedule]);
 
             // --- 計算邏輯 ---
-            // 計算「修正後」的當前時間
             const adjustedNow = useMemo(() => {
                 return new Date(now.getTime() + offset);
             }, [now, offset]);
 
-            // 判斷當前的時段
             const currentSlot = useMemo(() => {
                 const currentMs = adjustedNow.getHours() * 3600000 + adjustedNow.getMinutes() * 60000 + adjustedNow.getSeconds() * 1000;
                 
                 for (let slot of schedule) {
-                    // 安全檢查，確保時間格式正確
                     if (!slot.start || !slot.end) continue;
-
                     const [sh, sm] = slot.start.split(':').map(Number);
                     const startMs = sh * 3600000 + sm * 60000;
-                    
                     const [eh, em] = slot.end.split(':').map(Number);
                     const endMs = eh * 3600000 + em * 60000;
 
@@ -160,36 +162,28 @@
                         return { ...slot, startMs, endMs, durationMs: endMs - startMs };
                     }
                 }
-                return null; // 非表定時間
+                return null;
             }, [adjustedNow, schedule]);
 
-            // --- B區 輪播邏輯 ---
             const reminderMessage = useMemo(() => {
                 if (!currentSlot) return "非考試/準備時段";
-
                 const currentMs = adjustedNow.getHours() * 3600000 + adjustedNow.getMinutes() * 60000 + adjustedNow.getSeconds() * 1000;
                 const elapsedMinutes = Math.floor((currentMs - currentSlot.startMs) / 60000);
-                
                 const messages = currentSlot.type === 'exam' ? EXAM_MESSAGES : BREAK_MESSAGES;
                 const index = Math.floor(elapsedMinutes / currentSlot.interval) % messages.length;
-                
                 return messages[index];
             }, [adjustedNow, currentSlot]);
 
-            // --- C區 進度條顏色邏輯 ---
             const progressInfo = useMemo(() => {
                 if (!currentSlot) return { percent: 0, color: 'bg-gray-300', text: '等待中' };
-
                 const currentMs = adjustedNow.getHours() * 3600000 + adjustedNow.getMinutes() * 60000 + adjustedNow.getSeconds() * 1000;
                 const progressMs = currentMs - currentSlot.startMs;
                 const totalMs = currentSlot.durationMs;
                 const remainingMs = totalMs - progressMs;
-                
                 const percent = Math.min(100, Math.max(0, (progressMs / totalMs) * 100));
 
                 let colorClass = 'bg-green-500';
                 let statusText = "考試進行中";
-
                 if (currentSlot.type === 'exam') {
                     if (remainingMs <= 10 * 60000) { 
                         colorClass = 'bg-red-500';
@@ -202,44 +196,86 @@
                     statusText = "下課/準備時間";
                     colorClass = 'bg-blue-400';
                 }
-
                 return { percent, color: colorClass, text: statusText };
             }, [adjustedNow, currentSlot]);
 
-            // --- UI 處理函式 ---
+            // --- Handlers ---
             const handleInputChange = (field, value) => {
                 setExamData(prev => ({ ...prev, [field]: value }));
             };
-
             const handleSubjectChange = (index, value) => {
                 const newSubjects = [...examData.subjects];
                 newSubjects[index] = value;
                 setExamData(prev => ({ ...prev, subjects: newSubjects }));
             };
-
-            // 處理時間變更，並連動調整相鄰的休息時間
             const handleTimeChange = (scheduleIndex, field, value) => {
                 setSchedule(prev => {
                     const newSchedule = [...prev];
-                    // 更新當前考試的開始/結束時間
                     newSchedule[scheduleIndex] = { ...newSchedule[scheduleIndex], [field]: value };
-
-                    // 連動邏輯：
-                    // 如果修改的是考試的 "start"，則上一段休息的 "end" 要改成一樣
                     if (field === 'start' && scheduleIndex > 0) {
                         newSchedule[scheduleIndex - 1] = { ...newSchedule[scheduleIndex - 1], end: value };
                     }
-                    // 如果修改的是考試的 "end"，則下一段休息的 "start" 要改成一樣
                     if (field === 'end' && scheduleIndex < newSchedule.length - 1) {
                         newSchedule[scheduleIndex + 1] = { ...newSchedule[scheduleIndex + 1], start: value };
                     }
-
                     return newSchedule;
                 });
             };
-
             const adjustTime = (seconds) => {
                 setOffset(prev => prev + (seconds * 1000));
+            };
+
+            // Audio Handlers
+            const handleFileSelect = (index, e) => {
+                const file = e.target.files[0];
+                if (file) {
+                    const url = URL.createObjectURL(file);
+                    setAudioTracks(prev => {
+                        const newTracks = [...prev];
+                        if (newTracks[index].src) URL.revokeObjectURL(newTracks[index].src);
+                        newTracks[index] = { src: url, fileName: file.name, isPlaying: false, progress: 0 };
+                        return newTracks;
+                    });
+                }
+            };
+            const togglePlay = (index) => {
+                const audioEl = audioRefs.current[index];
+                if (!audioEl) return;
+                setAudioTracks(prev => {
+                    const newTracks = [...prev];
+                    const isNowPlaying = !newTracks[index].isPlaying;
+                    if (isNowPlaying) {
+                        newTracks.forEach((track, i) => {
+                            if (i !== index && track.isPlaying) {
+                                if (audioRefs.current[i]) audioRefs.current[i].pause();
+                                track.isPlaying = false;
+                            }
+                        });
+                        audioEl.play();
+                    } else {
+                        audioEl.pause();
+                    }
+                    newTracks[index].isPlaying = isNowPlaying;
+                    return newTracks;
+                });
+            };
+            const handleAudioEnded = (index) => {
+                setAudioTracks(prev => {
+                    const newTracks = [...prev];
+                    newTracks[index].isPlaying = false;
+                    newTracks[index].progress = 0;
+                    return newTracks;
+                });
+            };
+            const handleAudioTimeUpdate = (index, e) => {
+                const current = e.target.currentTime;
+                const duration = e.target.duration;
+                const percent = (duration > 0) ? (current / duration) * 100 : 0;
+                setAudioTracks(prev => {
+                    const newTracks = [...prev];
+                    newTracks[index] = { ...newTracks[index], progress: percent };
+                    return newTracks;
+                });
             };
 
             return (
@@ -247,14 +283,11 @@
                     
                     {/* === C區 (上方 1/3) === */}
                     <div className="h-[33vh] w-full bg-white border-b-4 border-gray-300 flex flex-row relative shadow-lg z-10">
-                        {/* 左側 1/3: 系統時間 */}
                         <div className="w-1/3 flex flex-col items-center justify-center border-r border-gray-200 bg-gray-50 relative group">
                             <div className="text-[1.5vw] text-gray-500 font-bold mb-1">現在時間</div>
                             <div className="text-[6vw] font-black leading-none text-gray-800 tabular-nums tracking-tighter">
                                 {formatTime(adjustedNow)}
                             </div>
-                            
-                            {/* 微調按鈕 */}
                             <div className="absolute bottom-2 flex gap-4 opacity-0 group-hover:opacity-100 transition-opacity duration-300">
                                 <button onClick={() => adjustTime(-60)} className="px-3 py-1 bg-gray-200 rounded text-sm hover:bg-gray-300">-1分</button>
                                 <button onClick={() => adjustTime(-1)} className="px-3 py-1 bg-gray-200 rounded text-sm hover:bg-gray-300">-1秒</button>
@@ -263,26 +296,37 @@
                             </div>
                         </div>
 
-                        {/* 右側 2/3: 進度條 */}
                         <div className="w-2/3 flex flex-col justify-center px-8 bg-gray-100 relative">
-                            <div className="flex justify-between mb-2">
-                                <span className="text-[2vw] font-bold text-gray-700">
+                            <div className="flex justify-between items-end mb-3">
+                                <span className="text-[2vw] font-bold text-gray-700 pb-1">
                                     {currentSlot ? (currentSlot.type === 'exam' ? '考試進度' : '下課休息') : '等待中'}
                                 </span>
-                                <span className="text-[2vw] font-bold text-gray-600">
-                                    {currentSlot ? `${currentSlot.start} - ${currentSlot.end}` : '--:--'}
-                                </span>
+                                {currentSlot ? (
+                                    <div className="flex items-baseline gap-2">
+                                        <span className="text-[1.5vw] font-bold text-gray-500 mr-2 hidden md:inline">
+                                            ({currentSlot.start} ~ {currentSlot.end})
+                                        </span>
+                                        <span className="text-[1.8vw] font-bold text-gray-600">
+                                            本節結束：
+                                        </span>
+                                        <span className="text-[3.5vw] font-black text-blue-800 leading-none tracking-tight">
+                                            {currentSlot.end}
+                                        </span>
+                                    </div>
+                                ) : (
+                                    <span className="text-[2vw] font-bold text-gray-400">--:--</span>
+                                )}
                             </div>
-                            <div className="w-full h-[6vh] bg-gray-300 rounded-full overflow-hidden shadow-inner border-2 border-gray-200">
+                            <div className="w-full h-[6vh] bg-gray-300 rounded-full overflow-hidden shadow-inner border-2 border-gray-200 relative">
                                 <div 
                                     className={`h-full transition-all duration-1000 ease-linear ${progressInfo.color}`}
                                     style={{ width: `${progressInfo.percent}%` }}
                                 ></div>
-                            </div>
-                            <div className="absolute inset-0 flex items-center justify-center pt-10">
-                                <span className="text-[1.5vw] font-bold text-gray-500 opacity-60">
-                                    {progressInfo.text}
-                                </span>
+                                <div className="absolute inset-0 flex items-center justify-center">
+                                    <span className="text-[1.8vw] font-bold text-white drop-shadow-md text-shadow">
+                                        {progressInfo.text}
+                                    </span>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -293,45 +337,76 @@
                         {/* === A區 (左側 1/2) === */}
                         <div className="w-1/2 flex flex-col border-r-4 border-gray-300 bg-white overflow-hidden">
                             
-                            {/* A區上方 2/3: 科目與時間列表 */}
+                            {/* A區上方: 科目與時間列表 */}
                             <div className="h-2/3 flex flex-col border-b-2 border-dashed border-gray-300 pt-2">
                                 {schedule.map((slot, index) => {
-                                    // 只顯示考試項目 (type === 'exam')
                                     if (slot.type !== 'exam') return null;
-                                    
-                                    // 找出這是第幾個考試，用於對應科目名稱的 index
-                                    // 在 DEFAULT_SCHEDULE 中，考試的 index 分別是 1, 3, 5
-                                    // 對應 subjects 的 0, 1, 2
                                     const subjectIndex = Math.floor(index / 2);
-                                    
                                     const isActive = currentSlot && currentSlot.start === slot.start;
                                     
                                     return (
-                                        <div key={index} className={`flex-1 flex items-center px-6 border-b border-gray-100 last:border-0 transition-colors duration-500 ${isActive ? 'bg-yellow-50' : ''}`}>
-                                            <div className="flex-1 flex items-center gap-2">
+                                        <div key={index} className={`flex-1 flex items-center px-4 border-b border-gray-100 last:border-0 transition-colors duration-500 ${isActive ? 'bg-yellow-50' : ''}`}>
+                                            <div className="flex-1 flex items-center justify-between gap-2 w-full">
+                                                
                                                 {/* 科目輸入 */}
                                                 <input 
                                                     type="text" 
                                                     value={examData.subjects[subjectIndex] || ""}
                                                     onChange={(e) => handleSubjectChange(subjectIndex, e.target.value)}
-                                                    className="flex-[2] text-[3.5vw] font-black bg-transparent border-b-2 border-transparent hover:border-gray-200 focus:border-blue-500 outline-none placeholder-gray-300 leading-tight min-w-0"
+                                                    className="flex-1 min-w-0 text-[3.2vw] font-black bg-transparent border-b-2 border-transparent hover:border-gray-200 focus:border-blue-500 outline-none placeholder-gray-300 leading-tight"
                                                     placeholder={`科目 ${subjectIndex + 1}`}
                                                 />
                                                 
-                                                {/* 時間輸入區塊 */}
-                                                <div className="flex items-center gap-1 text-[2vw] font-bold text-gray-500 font-mono">
+                                                {/* 時間顯示與輸入區塊 (強制不壓縮) */}
+                                                <div className="flex-shrink-0 flex items-center gap-1 text-[2vw] font-bold text-gray-600 font-mono ml-2">
                                                     <input 
                                                         type="text"
                                                         value={slot.start}
                                                         onChange={(e) => handleTimeChange(index, 'start', e.target.value)}
-                                                        className="w-[3.5em] text-center bg-transparent border-b border-transparent hover:border-gray-300 focus:border-blue-500 outline-none"
+                                                        className="w-[3.2em] text-center bg-gray-50 border border-gray-300 rounded focus:border-blue-500 focus:bg-white outline-none"
                                                     />
                                                     <span>~</span>
                                                     <input 
                                                         type="text"
                                                         value={slot.end}
                                                         onChange={(e) => handleTimeChange(index, 'end', e.target.value)}
-                                                        className="w-[3.5em] text-center bg-transparent border-b border-transparent hover:border-gray-300 focus:border-blue-500 outline-none"
+                                                        className="w-[3.2em] text-center bg-gray-50 border border-gray-300 rounded focus:border-blue-500 focus:bg-white outline-none"
+                                                    />
+                                                </div>
+
+                                                {/* 聽力控制按鈕區 (回復功能) */}
+                                                <div className="flex-shrink-0 flex items-center gap-1 ml-2">
+                                                    <input 
+                                                        type="file" 
+                                                        accept="audio/*" 
+                                                        ref={el => fileInputRefs.current[subjectIndex] = el} 
+                                                        onChange={(e) => handleFileSelect(subjectIndex, e)} 
+                                                        className="hidden-input"
+                                                    />
+                                                    <button 
+                                                        onClick={() => fileInputRefs.current[subjectIndex].click()}
+                                                        className="btn-active w-8 h-8 flex items-center justify-center bg-gray-100 text-gray-500 rounded hover:bg-gray-200"
+                                                        title="上傳聽力檔"
+                                                    >
+                                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                                                    </button>
+                                                    
+                                                    {audioTracks[subjectIndex].src && (
+                                                        <button 
+                                                            onClick={() => togglePlay(subjectIndex)}
+                                                            className={`btn-active w-12 h-8 rounded text-white text-xs font-bold shadow flex items-center justify-center
+                                                                ${audioTracks[subjectIndex].isPlaying ? 'bg-red-500 hover:bg-red-600' : 'bg-green-500 hover:bg-green-600'}`}
+                                                        >
+                                                            {audioTracks[subjectIndex].isPlaying ? '暫停' : '播放'}
+                                                        </button>
+                                                    )}
+                                                    
+                                                    <audio 
+                                                        ref={el => audioRefs.current[subjectIndex] = el}
+                                                        src={audioTracks[subjectIndex].src || undefined} 
+                                                        onEnded={() => handleAudioEnded(subjectIndex)}
+                                                        onTimeUpdate={(e) => handleAudioTimeUpdate(subjectIndex, e)}
+                                                        hidden
                                                     />
                                                 </div>
                                             </div>
@@ -340,9 +415,8 @@
                                 })}
                             </div>
 
-                            {/* A區下方 1/3: 出席人數 */}
+                            {/* A區下方: 出席人數 */}
                             <div className="h-1/3 flex flex-row bg-blue-50">
-                                {/* 應到 */}
                                 <div className="flex-1 flex flex-col items-center justify-center border-r border-blue-200 p-2">
                                     <span className="text-[1.5vw] font-bold text-blue-800 mb-1">應到</span>
                                     <input 
@@ -353,7 +427,6 @@
                                         placeholder="0"
                                     />
                                 </div>
-                                {/* 實到 */}
                                 <div className="flex-1 flex flex-col items-center justify-center border-r border-blue-200 p-2">
                                     <span className="text-[1.5vw] font-bold text-green-800 mb-1">實到</span>
                                     <input 
@@ -364,7 +437,6 @@
                                         placeholder="0"
                                     />
                                 </div>
-                                {/* 未到 */}
                                 <div className="flex-[1.5] flex flex-col items-center justify-center p-2">
                                     <span className="text-[1.5vw] font-bold text-red-800 mb-1">未到座號/姓名</span>
                                     <textarea 
@@ -382,14 +454,11 @@
                             <div className="absolute top-0 left-0 bg-yellow-400 text-yellow-900 px-6 py-2 text-2xl font-bold rounded-br-lg z-20 shadow-md">
                                 提醒事項
                             </div>
-                            
                             <div className="flex-1 flex items-center justify-center p-12">
                                 <div className="text-[5vw] font-bold text-center leading-snug text-gray-800 animate-fade-in key={reminderMessage}">
                                     {reminderMessage}
                                 </div>
                             </div>
-                            
-                            {/* 裝飾線條 */}
                             <div className="h-4 bg-stripes w-full"></div>
                         </div>
                     </div>
